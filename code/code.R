@@ -1,0 +1,506 @@
+# =========================
+# 1. Load required packages
+# =========================
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ez)
+
+# =========================
+# 2. Read data
+# =========================
+data_p200_raw <- read.csv("/Users/yuanxiaoyu/Desktop/untitled folder/data/data_P200.csv",
+                          stringsAsFactors = FALSE, check.names = FALSE)
+data_n400_raw <- read.csv("/Users/yuanxiaoyu/Desktop/untitled folder/data/data_N400.csv",
+                          stringsAsFactors = FALSE, check.names = FALSE)
+data_p600_raw <- read.csv("/Users/yuanxiaoyu/Desktop/untitled folder/data/data_P600.csv",
+                          stringsAsFactors = FALSE, check.names = FALSE)
+
+# =========================
+# 3. Standardize text columns
+# =========================
+clean_basic_columns <- function(df) {
+  df$position <- toupper(trimws(df$position))
+  df$sample_name <- trimws(df$sample_name)
+  if ("component" %in% names(df)) {
+    df$component <- trimws(df$component)
+  }
+  return(df)
+}
+
+data_p200_raw <- clean_basic_columns(data_p200_raw)
+data_n400_raw <- clean_basic_columns(data_n400_raw)
+data_p600_raw <- clean_basic_columns(data_p600_raw)
+
+# =========================
+# 4. Convert wide format to long format
+# =========================
+convert_erp_wide_to_long <- function(df) {
+  required_base_cols <- c("position", "sample_name", "component")
+  missing_base_cols <- setdiff(required_base_cols, names(df))
+  
+  if (length(missing_base_cols) > 0) {
+    stop(paste("Missing required base columns:", paste(missing_base_cols, collapse = ", ")))
+  }
+  
+  measure_cols <- names(df)[grepl("_(μV|ms)$", names(df))]
+  
+  if (length(measure_cols) == 0) {
+    stop("No measurement columns found ending in _μV or _ms")
+  }
+  
+  long_df <- df %>%
+    pivot_longer(
+      cols = all_of(measure_cols),
+      names_to = c("word_class", ".value"),
+      names_pattern = "^(.*)_(μV|ms)$"
+    ) %>%
+    rename(
+      amplitude = `μV`,
+      latency = ms
+    )
+  
+  long_df$word_class <- trimws(long_df$word_class)
+  long_df$amplitude <- as.numeric(long_df$amplitude)
+  long_df$latency <- as.numeric(long_df$latency)
+  
+  return(long_df)
+}
+
+data_p200 <- convert_erp_wide_to_long(data_p200_raw)
+data_n400 <- convert_erp_wide_to_long(data_n400_raw)
+data_p600 <- convert_erp_wide_to_long(data_p600_raw)
+
+# =========================
+# 5. Inspect transformed data
+# =========================
+cat("P200 long-format columns:\n")
+print(colnames(data_p200))
+cat("\nP200 word classes:\n")
+print(unique(data_p200$word_class))
+
+cat("\nN400 long-format columns:\n")
+print(colnames(data_n400))
+cat("\nN400 word classes:\n")
+print(unique(data_n400$word_class))
+
+cat("\nP600 long-format columns:\n")
+print(colnames(data_p600))
+cat("\nP600 word classes:\n")
+print(unique(data_p600$word_class))
+
+# =========================
+# 6. Define functional brain regions for each ERP component
+# =========================
+define_brain_regions_by_erp <- function() {
+  brain_regions <- list(
+    "P200" = list(
+      "Frontal" = c("F3", "F4", "FZ", "F5", "F6"),
+      "Frontocentral" = c("FC3", "FC4", "FCZ", "FC5", "FC6"),
+      "Frontotemporal" = c("FT7", "FT8"),
+      "Central" = c("C3", "C4", "CZ"),
+      "Centroparietal" = c("CP3", "CP4", "CPZ"),
+      "Occipital" = c("O1", "O2")
+    ),
+    "N400" = list(
+      "Frontal" = c("F3", "F4", "FZ", "F5", "F7"),
+      "Frontocentral" = c("FC3", "FC4", "FCZ", "FC5"),
+      "Central" = c("C3", "C4", "CZ"),
+      "Centroparietal" = c("CP3", "CP4", "CPZ"),
+      "Parietal" = c("P3", "P4", "PZ"),
+      "Occipital" = c("O1", "O2")
+    ),
+    "P600" = list(
+      "Frontal" = c("F3", "F4", "FZ"),
+      "Frontopolar" = c("FP1", "FP2"),
+      "Frontocentral" = c("FC3", "FC4", "FCZ"),
+      "Central" = c("C3", "C4", "CZ"),
+      "Centroparietal" = c("CP3", "CP4", "CPZ"),
+      "Parietal" = c("P3", "P4", "PZ", "P5", "P6"),
+      "Temporal" = c("T7", "T8")
+    )
+  )
+  return(brain_regions)
+}
+
+brain_regions <- define_brain_regions_by_erp()
+
+# =========================
+# 7. Define electrode positions
+# =========================
+p200_positions <- unique(unlist(brain_regions$P200))
+n400_positions <- unique(unlist(brain_regions$N400))
+p600_positions <- unique(unlist(brain_regions$P600))
+
+# =========================
+# 8. Map electrodes to brain regions
+# =========================
+map_electrodes_to_regions <- function(data, erp_name) {
+  brain_regions <- define_brain_regions_by_erp()
+  erp_regions <- brain_regions[[erp_name]]
+  
+  position_to_region <- data.frame(
+    position = character(),
+    brain_region = character(),
+    stringsAsFactors = FALSE
+  )
+  
+  for (region_name in names(erp_regions)) {
+    positions <- erp_regions[[region_name]]
+    temp_df <- data.frame(
+      position = positions,
+      brain_region = region_name,
+      stringsAsFactors = FALSE
+    )
+    position_to_region <- rbind(position_to_region, temp_df)
+  }
+  
+  data_with_regions <- data %>%
+    left_join(position_to_region, by = "position") %>%
+    filter(!is.na(brain_region))
+  
+  return(data_with_regions)
+}
+
+# =========================
+# 9. Aggregate by brain region
+# =========================
+aggregate_by_brain_region <- function(data, measure_col, erp_name) {
+  data_with_regions <- map_electrodes_to_regions(data, erp_name)
+  
+  if (measure_col == "amplitude") {
+    aggregated_data <- data_with_regions %>%
+      group_by(sample_name, word_class, brain_region) %>%
+      summarise(
+        avg_amplitude = mean(amplitude, na.rm = TRUE),
+        n_electrodes = n(),
+        .groups = "drop"
+      )
+  } else {
+    aggregated_data <- data_with_regions %>%
+      group_by(sample_name, word_class, brain_region) %>%
+      summarise(
+        avg_latency = mean(latency, na.rm = TRUE),
+        n_electrodes = n(),
+        .groups = "drop"
+      )
+  }
+  
+  return(aggregated_data)
+}
+
+# =========================
+# 10. Simplified analysis
+# =========================
+run_simplified_analysis <- function(data, measure, erp_name) {
+  cat("\nRunning Simplified Analysis - Main Effects Testing:\n")
+  
+  if (measure == "amplitude") {
+    word_class_data <- data %>%
+      group_by(sample_name, word_class) %>%
+      summarise(mean_val = mean(avg_amplitude, na.rm = TRUE), .groups = "drop")
+    
+    brain_region_data <- data %>%
+      group_by(sample_name, brain_region) %>%
+      summarise(mean_val = mean(avg_amplitude, na.rm = TRUE), .groups = "drop")
+  } else {
+    word_class_data <- data %>%
+      group_by(sample_name, word_class) %>%
+      summarise(mean_val = mean(avg_latency, na.rm = TRUE), .groups = "drop")
+    
+    brain_region_data <- data %>%
+      group_by(sample_name, brain_region) %>%
+      summarise(mean_val = mean(avg_latency, na.rm = TRUE), .groups = "drop")
+  }
+  
+  cat("\n--- Word Class Main Effect ---\n")
+  tryCatch({
+    word_anova <- ezANOVA(
+      data = word_class_data,
+      dv = mean_val,
+      wid = sample_name,
+      within = .(word_class),
+      detailed = TRUE
+    )
+    print(word_anova$ANOVA)
+  }, error = function(e) {
+    cat("Word class effect analysis failed:", e$message, "\n")
+  })
+  
+  cat("\n--- Brain Region Main Effect ---\n")
+  tryCatch({
+    region_anova <- ezANOVA(
+      data = brain_region_data,
+      dv = mean_val,
+      wid = sample_name,
+      within = .(brain_region),
+      detailed = TRUE
+    )
+    print(region_anova$ANOVA)
+  }, error = function(e) {
+    cat("Brain region effect analysis failed:", e$message, "\n")
+  })
+  
+  return(list(
+    data = data,
+    erp_name = erp_name,
+    measure = measure,
+    simplified = TRUE
+  ))
+}
+
+# =========================
+# 11. Main ERP analysis
+# =========================
+run_erp_analysis <- function(data, measure, erp_name, positions) {
+  cat("\n", paste(rep("=", 60), collapse = ""), "\n", sep = "")
+  cat("Analyzing", erp_name, "component", ifelse(measure == "amplitude", "Amplitude", "Latency"), "\n")
+  cat(paste(rep("=", 60), collapse = ""), "\n", sep = "")
+  
+  data_filtered <- data %>%
+    filter(position %in% positions)
+  
+  if (measure == "amplitude") {
+    data_filtered <- data_filtered %>% filter(!is.na(amplitude))
+  } else {
+    data_filtered <- data_filtered %>% filter(!is.na(latency))
+  }
+  
+  cat("Original data points:", nrow(data_filtered), "\n")
+  cat("Number of subjects:", length(unique(data_filtered$sample_name)), "\n")
+  cat("Number of electrode positions:", length(unique(data_filtered$position)), "\n")
+  cat("Number of word classes:", length(unique(data_filtered$word_class)), "\n")
+  
+  aggregated_data <- aggregate_by_brain_region(data_filtered, measure, erp_name)
+  
+  cat("\nAggregated Data:\n")
+  cat("Data points:", nrow(aggregated_data), "\n")
+  cat("Brain regions:", paste(unique(aggregated_data$brain_region), collapse = ", "), "\n")
+  cat("Word classes:", paste(unique(aggregated_data$word_class), collapse = ", "), "\n")
+  
+  aggregated_data$sample_name <- as.factor(aggregated_data$sample_name)
+  aggregated_data$word_class <- as.factor(aggregated_data$word_class)
+  aggregated_data$brain_region <- as.factor(aggregated_data$brain_region)
+  
+  n_regions <- length(unique(aggregated_data$brain_region))
+  n_word_classes <- length(unique(aggregated_data$word_class))
+  expected_per_subject <- n_regions * n_word_classes
+  
+  complete_check <- aggregated_data %>%
+    group_by(sample_name) %>%
+    summarise(
+      n_obs = n(),
+      expected = expected_per_subject,
+      complete = (n_obs == expected),
+      .groups = "drop"
+    )
+  
+  complete_subjects <- complete_check$sample_name[complete_check$complete]
+  cat("Subjects with complete data:", length(complete_subjects), "\n")
+  
+  if (length(complete_subjects) < 15) {
+    cat("Insufficient complete subjects. Attempting to include subjects with at least 80% data...\n")
+    partial_complete_subjects <- complete_check$sample_name[
+      complete_check$n_obs >= 0.8 * expected_per_subject
+    ]
+    cat("Subjects with >= 80% data:", length(partial_complete_subjects), "\n")
+    
+    if (length(partial_complete_subjects) >= 15) {
+      complete_subjects <- partial_complete_subjects
+    }
+  }
+  
+  final_data <- aggregated_data %>%
+    filter(sample_name %in% complete_subjects) %>%
+    droplevels()
+  
+  cat("Final number of subjects for analysis:", length(unique(final_data$sample_name)), "\n")
+  cat("Final data points:", nrow(final_data), "\n")
+  
+  if (nrow(final_data) == 0) {
+    cat("No valid data available for analysis after filtering.\n")
+    return(list(
+      data = NULL,
+      anova = NULL,
+      descriptive = NULL,
+      erp_name = erp_name,
+      measure = measure
+    ))
+  }
+  
+  if (measure == "amplitude") {
+    descriptive_stats <- final_data %>%
+      group_by(word_class, brain_region) %>%
+      summarise(
+        mean_amp = mean(avg_amplitude, na.rm = TRUE),
+        sd_amp = sd(avg_amplitude, na.rm = TRUE),
+        n = n(),
+        .groups = "drop"
+      )
+    cat("\nDescriptive Statistics (Amplitude μV):\n")
+    print(descriptive_stats, n = Inf)
+  } else {
+    descriptive_stats <- final_data %>%
+      group_by(word_class, brain_region) %>%
+      summarise(
+        mean_lat = mean(avg_latency, na.rm = TRUE),
+        sd_lat = sd(avg_latency, na.rm = TRUE),
+        n = n(),
+        .groups = "drop"
+      )
+    cat("\nDescriptive Statistics (Latency ms):\n")
+    print(descriptive_stats, n = Inf)
+  }
+  
+  tryCatch({
+    cat("\nRunning Repeated Measures ANOVA...\n")
+    
+    if (measure == "amplitude") {
+      anova_result <- ezANOVA(
+        data = final_data,
+        dv = avg_amplitude,
+        wid = sample_name,
+        within = .(word_class, brain_region),
+        detailed = TRUE,
+        type = 2
+      )
+    } else {
+      anova_result <- ezANOVA(
+        data = final_data,
+        dv = avg_latency,
+        wid = sample_name,
+        within = .(word_class, brain_region),
+        detailed = TRUE,
+        type = 2
+      )
+    }
+    
+    cat("\nANOVA Results:\n")
+    anova_table <- anova_result$ANOVA
+    print(anova_table)
+    
+    cat("\nInterpretation of Significant Effects:\n")
+    significant_effects <- anova_table[anova_table$p < 0.05, ]
+    if (nrow(significant_effects) > 0) {
+      for (i in 1:nrow(significant_effects)) {
+        effect <- significant_effects$Effect[i]
+        p_val <- significant_effects$p[i]
+        f_val <- significant_effects$F[i]
+        cat(sprintf("- %s: F = %.3f, p = %.3f (Significant)\n", effect, f_val, p_val))
+      }
+    } else {
+      cat("- No significant effects found (p < 0.05)\n")
+    }
+    
+    if (!is.null(anova_result$`Mauchly's Test for Sphericity`)) {
+      cat("\nMauchly's Test for Sphericity:\n")
+      mauchly_table <- anova_result$`Mauchly's Test for Sphericity`
+      print(mauchly_table)
+      
+      sphericity_violations <- mauchly_table[mauchly_table$p < 0.05, ]
+      if (nrow(sphericity_violations) > 0) {
+        cat("\nSphericity Corrections (Greenhouse-Geisser):\n")
+        print(anova_result$`Sphericity Corrections`)
+      }
+    }
+    
+    return(list(
+      data = final_data,
+      anova = anova_result,
+      descriptive = descriptive_stats,
+      erp_name = erp_name,
+      measure = measure
+    ))
+    
+  }, error = function(e) {
+    cat("ANOVA failed:", e$message, "\n")
+    cat("Attempting simplified analysis...\n")
+    return(run_simplified_analysis(final_data, measure, erp_name))
+  })
+}
+
+# =========================
+# 12. Visualization
+# =========================
+create_erp_plots <- function(analysis_result) {
+  if (is.null(analysis_result$data)) return(NULL)
+  
+  data <- analysis_result$data
+  erp_name <- analysis_result$erp_name
+  measure <- analysis_result$measure
+  
+  if (measure == "amplitude") {
+    plot_data <- data %>%
+      group_by(word_class, brain_region) %>%
+      summarise(mean_val = mean(avg_amplitude, na.rm = TRUE), .groups = "drop")
+    
+    p1 <- ggplot(plot_data, aes(x = word_class, y = brain_region, fill = mean_val)) +
+      geom_tile() +
+      scale_fill_gradient2(low = "blue", mid = "white", high = "red", name = "Amplitude (μV)") +
+      theme_minimal() +
+      labs(title = paste(erp_name, "Amplitude"), x = "Word Class", y = "Brain Region") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  } else {
+    plot_data <- data %>%
+      group_by(word_class, brain_region) %>%
+      summarise(mean_val = mean(avg_latency, na.rm = TRUE), .groups = "drop")
+    
+    p1 <- ggplot(plot_data, aes(x = word_class, y = brain_region, fill = mean_val)) +
+      geom_tile() +
+      scale_fill_gradient(low = "lightblue", high = "darkblue", name = "Latency (ms)") +
+      theme_minimal() +
+      labs(title = paste(erp_name, "Latency"), x = "Word Class", y = "Brain Region") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  }
+  
+  return(p1)
+}
+
+# =========================
+# 13. Main wrapper
+# =========================
+run_complete_erp_analysis <- function() {
+  results <- list()
+  
+  cat("Starting P200 Analysis...\n")
+  results$p200_amplitude <- run_erp_analysis(data_p200, "amplitude", "P200", p200_positions)
+  results$p200_latency   <- run_erp_analysis(data_p200, "latency", "P200", p200_positions)
+  
+  cat("\nStarting N400 Analysis...\n")
+  results$n400_amplitude <- run_erp_analysis(data_n400, "amplitude", "N400", n400_positions)
+  results$n400_latency   <- run_erp_analysis(data_n400, "latency", "N400", n400_positions)
+  
+  cat("\nStarting P600 Analysis...\n")
+  results$p600_amplitude <- run_erp_analysis(data_p600, "amplitude", "P600", p600_positions)
+  results$p600_latency   <- run_erp_analysis(data_p600, "latency", "P600", p600_positions)
+  
+  return(results)
+}
+
+# =========================
+# 14. Run all analyses
+# =========================
+cat("Starting ERP Analysis: Brain Regional Mapping vs Word Class Relationship\n")
+cat(paste(rep("=", 80), collapse = ""), "\n", sep = "")
+
+all_results <- run_complete_erp_analysis()
+
+# =========================
+# 15. Plot results
+# =========================
+p_p200_amp <- create_erp_plots(all_results$p200_amplitude)
+p_p200_lat <- create_erp_plots(all_results$p200_latency)
+
+p_n400_amp <- create_erp_plots(all_results$n400_amplitude)
+p_n400_lat <- create_erp_plots(all_results$n400_latency)
+
+p_p600_amp <- create_erp_plots(all_results$p600_amplitude)
+p_p600_lat <- create_erp_plots(all_results$p600_latency)
+
+print(p_p200_amp)
+print(p_p200_lat)
+print(p_n400_amp)
+print(p_n400_lat)
+print(p_p600_amp)
+print(p_p600_lat)
+
